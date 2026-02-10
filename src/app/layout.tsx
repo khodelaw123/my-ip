@@ -13,6 +13,8 @@ export const metadata: Metadata = {
   description: "نمایش سریع آدرس IP عمومی شما به همراه اطلاعات تقریبی مکان",
   icons: {
     icon: "/icon.svg",
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
   },
   openGraph: {
     title: "آدرس IP شما",
