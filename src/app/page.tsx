@@ -284,18 +284,12 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <a
               aria-label="GitHub"
-              href="#"
+              href="https://github.com/khodelaw123/my-ip"
               className="rounded-full p-1.5 transition-colors hover:bg-slate-100"
             >
               <Github className="h-4 w-4" />
             </a>
-            <a
-              aria-label="Twitter"
-              href="#"
-              className="rounded-full p-1.5 transition-colors hover:bg-slate-100"
-            >
-              <Twitter className="h-4 w-4" />
-            </a>
+            
           </div>
         </div>
       </footer>
