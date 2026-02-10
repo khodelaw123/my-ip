@@ -1,4 +1,4 @@
-﻿## IP Viewer (Persian RTL)
+﻿## IP Viewer 
 
 ### Run
 
