@@ -190,9 +190,9 @@ export default function Home() {
   return (
     <div className="min-h-screen text-slate-900">
       <header
-        className={`fixed inset-x-0 top-0 z-30 border-b border-slate-200 transition-all duration-300 ${isScrolled ? "bg-white/95 shadow-[0_8px_30px_rgba(15,23,42,0.14)]" : "bg-white/85 shadow-[0_4px_16px_rgba(15,23,42,0.08)]"}`}
+        className={`fixed left-1/2 top-4 z-30 w-[min(92vw,760px)] -translate-x-1/2 rounded-[2rem] border border-slate-200/80 backdrop-blur-md transition-all duration-300 ${isScrolled ? "scale-[1.04] bg-white/95 py-1 shadow-[0_14px_36px_rgba(15,23,42,0.2)]" : "bg-white/88 shadow-[0_8px_24px_rgba(15,23,42,0.12)]"}`}
       >
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+        <div className="mx-auto flex w-full items-center justify-between px-4 py-3 sm:px-6">
           <h1 className="text-right text-xl font-bold text-slate-900 sm:text-2xl">آدرس IP شما</h1>
           <button
             type="button"
@@ -205,7 +205,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="flex min-h-screen items-center justify-center px-4 pb-40 pt-28 sm:px-6 md:pt-32 lg:px-8">
+      <main className="flex min-h-screen items-center justify-center px-4 pb-40 pt-36 sm:px-6 md:pt-40 lg:px-8">
         <section className="glass animate-fade-in-up w-full max-w-2xl rounded-3xl px-6 py-8 sm:px-8 sm:py-10">
           <h2 className="text-2xl font-bold text-slate-900 sm:text-4xl">
             <span className="typing-caret">{typedTitle || "\u00a0"}</span>
