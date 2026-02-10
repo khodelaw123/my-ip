@@ -279,12 +279,7 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 px-4 text-center text-xs sm:justify-between sm:gap-4 sm:px-6 sm:text-sm lg:px-8">
           <p>© ۱۴۰۴ - تمام حقوق محفوظ است</p>
           <div className="flex items-center gap-3">
-            <a className="transition-colors hover:text-accent" href="#">
-              سیاست حفظ حریم خصوصی
-            </a>
-            <a className="transition-colors hover:text-accent" href="#">
-              شرایط استفاده
-            </a>
+            
           </div>
           <div className="flex items-center gap-3">
             <a
@@ -302,9 +297,6 @@ export default function Home() {
               <Twitter className="h-4 w-4" />
             </a>
           </div>
-          <p className="w-full text-[11px] text-slate-500 sm:w-auto sm:text-xs">
-            این اطلاعات تقریبی است و برای اهداف آموزشی ارائه می‌شود.
-          </p>
         </div>
       </footer>
     </div>
