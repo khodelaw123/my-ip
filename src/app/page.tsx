@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { Github, RefreshCcw, Twitter } from "lucide-react";
+import { Github, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 type IpDetails = {
@@ -26,13 +26,25 @@ type IpifyResponse = {
 type IpWhoIsResponse = {
   success?: boolean;
   message?: string;
+  ip?: string;
+  type?: "IPv4" | "IPv6";
   connection?: {
     isp?: string;
   };
   city?: string;
   country?: string;
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | string;
+  longitude?: number | string;
+};
+
+type IpApiCoResponse = {
+  ip?: string;
+  version?: string;
+  org?: string;
+  city?: string;
+  country_name?: string;
+  latitude?: number | string;
+  longitude?: number | string;
 };
 
 const REQUEST_TIMEOUT_MS = 9000;
@@ -104,18 +116,7 @@ export default function Home() {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const ipRes = await fetchWithTimeout("https://api.ipify.org?format=json");
-      if (!ipRes.ok) {
-        throw new Error("ipify response not ok");
-      }
-
-      const ipJson = (await ipRes.json()) as IpifyResponse;
-      const ip = ipJson.ip?.trim();
-      if (!ip) {
-        throw new Error("missing ip");
-      }
-
-      const geoRes = await fetchWithTimeout(`https://ipwho.is/${ip}`);
+      const geoRes = await fetchWithTimeout("https://ipwho.is/");
       if (!geoRes.ok) {
         throw new Error("ipwhois response not ok");
       }
@@ -123,6 +124,11 @@ export default function Home() {
       const geoJson = (await geoRes.json()) as IpWhoIsResponse;
       if (geoJson.success === false) {
         throw new Error(geoJson.message || "ipwhois error");
+      }
+
+      const ip = geoJson.ip?.trim();
+      if (!ip) {
+        throw new Error("missing ip");
       }
 
       const isp = geoJson.connection?.isp?.trim() || FALLBACK_TEXT;
@@ -136,7 +142,7 @@ export default function Home() {
         error: null,
         data: {
           ip,
-          ipType: detectIpType(ip),
+          ipType: geoJson.type ?? detectIpType(ip),
           isp,
           city,
           country,
@@ -145,11 +151,39 @@ export default function Home() {
         },
       });
     } catch {
-      setState({
-        loading: false,
-        error: "خطا در دریافت اطلاعات. لطفاً دوباره امتحان کنید.",
-        data: null,
-      });
+      try {
+        const fallbackRes = await fetchWithTimeout("https://ipapi.co/json/");
+        if (!fallbackRes.ok) {
+          throw new Error("ipapi fallback failed");
+        }
+
+        const fallback = (await fallbackRes.json()) as IpApiCoResponse;
+        const ip = fallback.ip?.trim();
+        if (!ip) {
+          throw new Error("missing fallback ip");
+        }
+
+        setState({
+          loading: false,
+          error: null,
+          data: {
+            ip,
+            ipType: fallback.version === "IPv6" ? "IPv6" : detectIpType(ip),
+          isp,
+            city: fallback.city?.trim() || FALLBACK_TEXT,
+            country: fallback.country_name?.trim() || FALLBACK_TEXT,
+            lat: parseCoordinate(fallback.latitude),
+            lon: parseCoordinate(fallback.longitude),
+            isp: fallback.org?.trim() || FALLBACK_TEXT,
+          },
+        },
+      } catch {
+        setState({
+          loading: false,
+          error: "خطا در دریافت اطلاعات. لطفاً دوباره امتحان کنید.",
+          data: null,
+        });
+      }
     }
   }, []);
 
