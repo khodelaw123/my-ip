@@ -4,8 +4,8 @@ import { Github, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 type IpDetails = {
-  ip: string;
-  ipType: "IPv4" | "IPv6";
+  ipv4: string | null;
+  ipv6: string | null;
   isp: string;
   city: string;
   country: string;
@@ -43,13 +43,13 @@ type IpApiCoResponse = {
   longitude?: number | string;
 };
 
+type IpifyResponse = {
+  ip?: string;
+};
+
 const REQUEST_TIMEOUT_MS = 9000;
 const FALLBACK_TEXT = "نامشخص";
 const TITLE_TEXT = "آدرس IP شما:";
-
-function detectIpType(ip: string): "IPv4" | "IPv6" {
-  return ip.includes(":") ? "IPv6" : "IPv4";
-}
 
 function parseCoordinate(value?: number | string): number | null {
   const parsed = typeof value === "string" ? Number(value) : value;
@@ -105,8 +105,18 @@ export default function Home() {
   });
   const [isScrolled, setIsScrolled] = useState(false);
   const [typedTitle, setTypedTitle] = useState("");
-  const [typedIp, setTypedIp] = useState("");
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+
+  const fetchIpFrom = useCallback(async (url: string) => {
+    try {
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) return null;
+      const json = (await res.json()) as IpifyResponse;
+      return json.ip?.trim() || null;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const refreshIpData = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -122,10 +132,10 @@ export default function Home() {
         throw new Error(geoJson.message || "ipwhois error");
       }
 
-      const ip = geoJson.ip?.trim();
-      if (!ip) {
-        throw new Error("missing ip");
-      }
+      const [ipv4, ipv6] = await Promise.all([
+        fetchIpFrom("https://api4.ipify.org?format=json"),
+        fetchIpFrom("https://api6.ipify.org?format=json"),
+      ]);
 
       const isp = geoJson.connection?.isp?.trim() || FALLBACK_TEXT;
       const city = geoJson.city?.trim() || FALLBACK_TEXT;
@@ -137,8 +147,8 @@ export default function Home() {
         loading: false,
         error: null,
         data: {
-          ip,
-          ipType: geoJson.type ?? detectIpType(ip),
+          ipv4,
+          ipv6,
           isp,
           city,
           country,
@@ -154,17 +164,17 @@ export default function Home() {
         }
 
         const fallback = (await fallbackRes.json()) as IpApiCoResponse;
-        const ip = fallback.ip?.trim();
-        if (!ip) {
-          throw new Error("missing fallback ip");
-        }
+        const [ipv4, ipv6] = await Promise.all([
+          fetchIpFrom("https://api4.ipify.org?format=json"),
+          fetchIpFrom("https://api6.ipify.org?format=json"),
+        ]);
 
         setState({
           loading: false,
           error: null,
           data: {
-            ip,
-            ipType: fallback.version === "IPv6" ? "IPv6" : detectIpType(ip),
+            ipv4,
+            ipv6,
             city: fallback.city?.trim() || FALLBACK_TEXT,
             country: fallback.country_name?.trim() || FALLBACK_TEXT,
             lat: parseCoordinate(fallback.latitude),
@@ -180,7 +190,7 @@ export default function Home() {
         });
       }
     }
-  }, []);
+  }, [fetchIpFrom]);
 
   useEffect(() => {
     void refreshIpData();
@@ -196,11 +206,6 @@ export default function Home() {
   }, []);
 
   useEffect(() => typeText(TITLE_TEXT, setTypedTitle, 65, prefersReducedMotion), [prefersReducedMotion]);
-
-  useEffect(() => {
-    const nextIp = state.data?.ip ?? "";
-    return typeText(nextIp, setTypedIp, 55, prefersReducedMotion || !nextIp);
-  }, [state.data?.ip, prefersReducedMotion]);
 
   useEffect(() => {
     const onScroll = () => setIsScrolled(window.scrollY > 12);
@@ -255,17 +260,22 @@ export default function Home() {
 
           {state.data ? (
             <div className="mt-7 space-y-5">
-              <p className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-left font-mono text-2xl font-bold tracking-wide text-sky-600 sm:text-4xl" dir="ltr">
-                <span className="typing-caret-ltr">{typedIp || "\u00a0"}</span>
-              </p>
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-sky-100 bg-sky-50 px-4 py-3 text-left text-sky-700" dir="ltr">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-sky-500">IPv4</p>
+                  <p className="break-all font-mono text-sm font-bold sm:text-base">
+                    {state.data.ipv4 || FALLBACK_TEXT}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-cyan-100 bg-cyan-50 px-4 py-3 text-left text-cyan-700" dir="ltr">
+                  <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-500">IPv6</p>
+                  <p className="break-all font-mono text-sm font-bold sm:text-base">
+                    {state.data.ipv6 || FALLBACK_TEXT}
+                  </p>
+                </div>
+              </div>
 
               <ul className="space-y-3 text-base text-slate-800 sm:text-lg">
-                <li className="rounded-xl bg-white/80 px-4 py-2 text-right">
-                  <span className="font-semibold">نوع IP:</span>{" "}
-                  <span dir="ltr" className="inline-block [unicode-bidi:isolate]">
-                    {state.data.ipType}
-                  </span>
-                </li>
                 <li className="rounded-xl bg-white/80 px-4 py-2 text-right">
                   <span className="font-semibold">ارائه‌دهنده اینترنت:</span> {state.data.isp}
                 </li>
