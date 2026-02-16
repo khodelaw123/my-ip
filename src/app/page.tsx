@@ -2,58 +2,178 @@
 
 import { Github, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-
-type IpDetails = {
-  ipv4: string | null;
-  ipv6: string | null;
-  isp: string;
-  city: string;
-  country: string;
-  lat: number | null;
-  lon: number | null;
-};
+import {
+  EMPTY_INTEL,
+  detectIpFamily,
+  hasAtLeastOneIp,
+  isGeoWeak,
+  isMeaningfulText,
+  mergeIntel,
+  parseCoordinate,
+  parseLocPair,
+  type IntelData,
+} from "@/lib/network-intel";
 
 type FetchState = {
   loading: boolean;
   error: string | null;
-  data: IpDetails | null;
+  data: IntelData | null;
 };
 
-type IpWhoIsResponse = {
-  success?: boolean;
-  message?: string;
-  ip?: string;
-  type?: "IPv4" | "IPv6";
-  connection?: {
-    isp?: string;
+type NetworkIntelResponse = {
+  success: boolean;
+  data: IntelData & {
+    sourcesUsed: string[];
   };
-  city?: string;
-  country?: string;
-  latitude?: number | string;
-  longitude?: number | string;
+  diagnostics?: {
+    attempted: string[];
+    failures: { source: string; reason: string }[];
+  };
 };
 
-type IpApiCoResponse = {
-  ip?: string;
-  version?: string;
-  org?: string;
-  city?: string;
-  country_name?: string;
-  latitude?: number | string;
-  longitude?: number | string;
+type ProviderFormat = "json" | "text";
+
+type Provider = {
+  id: string;
+  url: string;
+  format: ProviderFormat;
 };
 
-type IpifyResponse = {
-  ip?: string;
-};
+const REQUEST_TIMEOUT_MS = 3500;
+const SERVER_TIMEOUT_MS = 7000;
+const FALLBACK_TEXT = "\u0646\u0627\u0645\u0634\u062e\u0635";
+const TITLE_TEXT = "\u0622\u062f\u0631\u0633 IP \u0634\u0645\u0627:";
 
-const REQUEST_TIMEOUT_MS = 9000;
-const FALLBACK_TEXT = "نامشخص";
-const TITLE_TEXT = "آدرس IP شما:";
+const BROWSER_PROVIDERS: Provider[] = [
+  { id: "ipify-v4", url: "https://api4.ipify.org?format=json", format: "json" },
+  { id: "ipify-v6", url: "https://api6.ipify.org?format=json", format: "json" },
+  { id: "ipify-v64", url: "https://api64.ipify.org?format=json", format: "json" },
+  { id: "ipify-generic", url: "https://api.ipify.org?format=json", format: "json" },
+  { id: "ipsb-ip", url: "https://api.ip.sb/ip", format: "text" },
+  { id: "ipsb64-ip", url: "https://api64.ip.sb/ip", format: "text" },
+  { id: "icanhazip-v4", url: "https://ipv4.icanhazip.com", format: "text" },
+  { id: "icanhazip-v6", url: "https://ipv6.icanhazip.com", format: "text" },
+  { id: "ipwhois-geo", url: "https://ipwho.is/", format: "json" },
+  { id: "ipapi-geo", url: "https://ipapi.co/json/", format: "json" },
+  { id: "ipinfo-geo", url: "https://ipinfo.io/json", format: "json" },
+  { id: "freeipapi-geo", url: "https://freeipapi.com/api/json", format: "json" },
+  { id: "ipsb-geo", url: "https://api.ip.sb/geoip", format: "json" },
+];
 
-function parseCoordinate(value?: number | string): number | null {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+function toRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") return {};
+  return value as Record<string, unknown>;
+}
+
+function pickString(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function pickCoordinate(record: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    const coordinate = parseCoordinate(value as number | string | null);
+    if (coordinate !== null) return coordinate;
+  }
+  return null;
+}
+
+function normalizeIpCandidate(value: string | null): Partial<IntelData> {
+  if (!value) return {};
+  const family = detectIpFamily(value);
+  if (family === "IPv4") return { ipv4: value };
+  if (family === "IPv6") return { ipv6: value };
+  return {};
+}
+
+function parseProviderJson(providerId: string, body: unknown): Partial<IntelData> {
+  const record = toRecord(body);
+
+  if (
+    providerId === "ipify-v4" ||
+    providerId === "ipify-v6" ||
+    providerId === "ipify-v64" ||
+    providerId === "ipify-generic"
+  ) {
+    return normalizeIpCandidate(pickString(record, ["ip"]));
+  }
+
+  if (providerId === "ipwhois-geo") {
+    const connection = toRecord(record.connection);
+    return {
+      ...normalizeIpCandidate(pickString(record, ["ip"])),
+      isp: pickString(connection, ["isp", "org", "organization"]),
+      city: pickString(record, ["city"]),
+      country: pickString(record, ["country", "country_name", "countryCode", "country_code"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId === "ipapi-geo") {
+    return {
+      ...normalizeIpCandidate(pickString(record, ["ip"])),
+      isp: pickString(record, ["org", "isp", "asn_org"]),
+      city: pickString(record, ["city"]),
+      country: pickString(record, ["country_name", "country", "country_code"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId === "ipinfo-geo") {
+    const loc = parseLocPair(pickString(record, ["loc"]));
+    return {
+      ...normalizeIpCandidate(pickString(record, ["ip"])),
+      isp: pickString(record, ["org"]),
+      city: pickString(record, ["city"]),
+      country: pickString(record, ["country"]),
+      lat: loc.lat,
+      lon: loc.lon,
+    };
+  }
+
+  if (providerId === "freeipapi-geo") {
+    return {
+      ...normalizeIpCandidate(pickString(record, ["ipAddress", "ip"])),
+      isp: pickString(record, ["isp", "organizationName", "organization"]),
+      city: pickString(record, ["cityName", "city"]),
+      country: pickString(record, ["countryName", "countryCode", "country"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId === "ipsb-geo") {
+    return {
+      ...normalizeIpCandidate(pickString(record, ["ip"])),
+      isp: pickString(record, ["isp", "organization", "asn_organization"]),
+      city: pickString(record, ["city"]),
+      country: pickString(record, ["country", "country_name", "country_code"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  return {};
+}
+
+function parseProviderText(providerId: string, text: string): Partial<IntelData> {
+  const value = text.trim();
+  if (!value) return {};
+  if (
+    providerId === "ipsb-ip" ||
+    providerId === "ipsb64-ip" ||
+    providerId === "icanhazip-v4" ||
+    providerId === "icanhazip-v6"
+  ) {
+    return normalizeIpCandidate(value);
+  }
+  return {};
 }
 
 async function fetchWithTimeout(
@@ -97,6 +217,53 @@ function typeText(
   return () => window.clearInterval(interval);
 }
 
+async function runBrowserAggregation(): Promise<{ data: IntelData }> {
+  const settled = await Promise.allSettled(
+    BROWSER_PROVIDERS.map(async (provider) => {
+      const res = await fetchWithTimeout(provider.url, REQUEST_TIMEOUT_MS);
+      if (!res.ok) {
+        throw new Error(`http-${res.status}`);
+      }
+
+      if (provider.format === "json") {
+        const body = await res.json();
+        return { id: provider.id, partial: parseProviderJson(provider.id, body) };
+      }
+
+      const text = await res.text();
+      return { id: provider.id, partial: parseProviderText(provider.id, text) };
+    }),
+  );
+
+  let merged = { ...EMPTY_INTEL };
+  for (let i = 0; i < settled.length; i += 1) {
+    const item = settled[i];
+    if (item.status === "fulfilled") {
+      merged = mergeIntel(merged, item.value.partial);
+    }
+  }
+
+  return { data: merged };
+}
+
+function mergeMissingFromServer(browserData: IntelData, serverData: IntelData): IntelData {
+  const merged = { ...browserData };
+
+  if (!merged.ipv4 && serverData.ipv4) merged.ipv4 = serverData.ipv4;
+  if (!merged.ipv6 && serverData.ipv6) merged.ipv6 = serverData.ipv6;
+
+  if (!isMeaningfulText(merged.city) && serverData.city) merged.city = serverData.city;
+  if (!isMeaningfulText(merged.country) && serverData.country) merged.country = serverData.country;
+  if (!isMeaningfulText(merged.isp) && serverData.isp) merged.isp = serverData.isp;
+
+  if ((merged.lat === null || merged.lon === null) && serverData.lat !== null && serverData.lon !== null) {
+    merged.lat = serverData.lat;
+    merged.lon = serverData.lon;
+  }
+
+  return merged;
+}
+
 export default function Home() {
   const [state, setState] = useState<FetchState>({
     loading: true,
@@ -107,90 +274,45 @@ export default function Home() {
   const [typedTitle, setTypedTitle] = useState("");
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
 
-  const fetchIpFrom = useCallback(async (url: string) => {
-    try {
-      const res = await fetchWithTimeout(url);
-      if (!res.ok) return null;
-      const json = (await res.json()) as IpifyResponse;
-      return json.ip?.trim() || null;
-    } catch {
-      return null;
-    }
-  }, []);
-
   const refreshIpData = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const geoRes = await fetchWithTimeout("https://ipwho.is/");
-      if (!geoRes.ok) {
-        throw new Error("ipwhois response not ok");
+      const browser = await runBrowserAggregation();
+      let finalData = browser.data;
+
+      if (!hasAtLeastOneIp(finalData) || isGeoWeak(finalData)) {
+        try {
+          const serverRes = await fetchWithTimeout("/api/network-intel", SERVER_TIMEOUT_MS);
+          if (serverRes.ok) {
+            const serverJson = (await serverRes.json()) as NetworkIntelResponse;
+            if (serverJson.success && serverJson.data) {
+              finalData = mergeMissingFromServer(finalData, serverJson.data);
+            }
+          }
+        } catch {
+          // Keep browser aggregation results when server fallback fails.
+        }
       }
 
-      const geoJson = (await geoRes.json()) as IpWhoIsResponse;
-      if (geoJson.success === false) {
-        throw new Error(geoJson.message || "ipwhois error");
+      if (!hasAtLeastOneIp(finalData)) {
+        throw new Error("missing all ip families");
       }
-
-      const [ipv4, ipv6] = await Promise.all([
-        fetchIpFrom("https://api4.ipify.org?format=json"),
-        fetchIpFrom("https://api6.ipify.org?format=json"),
-      ]);
-
-      const isp = geoJson.connection?.isp?.trim() || FALLBACK_TEXT;
-      const city = geoJson.city?.trim() || FALLBACK_TEXT;
-      const country = geoJson.country?.trim() || FALLBACK_TEXT;
-      const lat = parseCoordinate(geoJson.latitude);
-      const lon = parseCoordinate(geoJson.longitude);
 
       setState({
         loading: false,
         error: null,
-        data: {
-          ipv4,
-          ipv6,
-          isp,
-          city,
-          country,
-          lat,
-          lon,
-        },
+        data: finalData,
       });
     } catch {
-      try {
-        const fallbackRes = await fetchWithTimeout("https://ipapi.co/json/");
-        if (!fallbackRes.ok) {
-          throw new Error("ipapi fallback failed");
-        }
-
-        const fallback = (await fallbackRes.json()) as IpApiCoResponse;
-        const [ipv4, ipv6] = await Promise.all([
-          fetchIpFrom("https://api4.ipify.org?format=json"),
-          fetchIpFrom("https://api6.ipify.org?format=json"),
-        ]);
-
-        setState({
-          loading: false,
-          error: null,
-          data: {
-            ipv4,
-            ipv6,
-            city: fallback.city?.trim() || FALLBACK_TEXT,
-            country: fallback.country_name?.trim() || FALLBACK_TEXT,
-            lat: parseCoordinate(fallback.latitude),
-            lon: parseCoordinate(fallback.longitude),
-            isp: fallback.org?.trim() || FALLBACK_TEXT,
-          },
-        });
-      } catch {
-        setState({
-          loading: false,
-          error: "خطا در دریافت اطلاعات. لطفاً دوباره امتحان کنید.",
-          data: null,
-        });
-      }
+      setState({
+        loading: false,
+        error:
+          "\u062e\u0637\u0627 \u062f\u0631 \u062f\u0631\u06cc\u0627\u0641\u062a \u0627\u0637\u0644\u0627\u0639\u0627\u062a. \u0644\u0637\u0641\u0627\u064b \u062f\u0648\u0628\u0627\u0631\u0647 \u0627\u0645\u062a\u062d\u0627\u0646 \u06a9\u0646\u06cc\u062f.",
+        data: null,
+      });
     }
-  }, [fetchIpFrom]);
+  }, []);
 
   useEffect(() => {
     void refreshIpData();
@@ -227,11 +349,15 @@ export default function Home() {
         className={`fixed left-1/2 top-4 z-30 w-[min(92vw,760px)] -translate-x-1/2 rounded-[2rem] border border-slate-200/80 backdrop-blur-md transition-all duration-300 ${isScrolled ? "scale-[1.04] bg-white/95 py-1 shadow-[0_14px_36px_rgba(15,23,42,0.2)]" : "bg-white/88 shadow-[0_8px_24px_rgba(15,23,42,0.12)]"}`}
       >
         <div className="mx-auto flex w-full items-center justify-between px-4 py-3 sm:px-6">
-          <h1 className="text-right text-xl font-bold text-slate-900 sm:text-2xl">آدرس IP شما</h1>
+          <h1 className="text-right text-xl font-bold text-slate-900 sm:text-2xl">
+            {"\u0622\u062f\u0631\u0633 IP \u0634\u0645\u0627"}
+          </h1>
           <button
             type="button"
             onClick={() => void refreshIpData()}
-            aria-label="به‌روزرسانی اطلاعات IP"
+            aria-label={
+              "\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u0627\u0637\u0644\u0627\u0639\u0627\u062a IP"
+            }
             className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-900 shadow-sm transition-transform duration-200 hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-white"
           >
             <RefreshCcw className={`h-4 w-4 ${state.loading ? "animate-spin" : ""}`} />
@@ -248,7 +374,9 @@ export default function Home() {
           {state.loading ? (
             <div className="mt-8 flex items-center gap-3 text-slate-700">
               <span className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-              <span className="text-base sm:text-lg">در حال دریافت اطلاعات...</span>
+              <span className="text-base sm:text-lg">
+                {"\u062f\u0631 \u062d\u0627\u0644 \u062f\u0631\u06cc\u0627\u0641\u062a \u0627\u0637\u0644\u0627\u0639\u0627\u062a..."}
+              </span>
             </div>
           ) : null}
 
@@ -277,27 +405,42 @@ export default function Home() {
 
               <ul className="space-y-3 text-base text-slate-800 sm:text-lg">
                 <li className="rounded-xl bg-white/80 px-4 py-2 text-right">
-                  <span className="font-semibold">ارائه‌دهنده اینترنت:</span> {state.data.isp}
+                  <span className="font-semibold">
+                    {
+                      "\u0627\u0631\u0627\u0626\u0647\u200c\u062f\u0647\u0646\u062f\u0647 \u0627\u06cc\u0646\u062a\u0631\u0646\u062a:"
+                    }
+                  </span>{" "}
+                  {state.data.isp || FALLBACK_TEXT}
                 </li>
                 <li className="rounded-xl bg-white/80 px-4 py-2 text-right">
-                  <span className="font-semibold">شهر تقریبی:</span> {state.data.city}
+                  <span className="font-semibold">
+                    {"\u0634\u0647\u0631 \u062a\u0642\u0631\u06cc\u0628\u06cc:"}
+                  </span>{" "}
+                  {state.data.city || FALLBACK_TEXT}
                 </li>
                 <li className="rounded-xl bg-white/80 px-4 py-2 text-right">
-                  <span className="font-semibold">کشور:</span> {state.data.country}
+                  <span className="font-semibold">{"\u06a9\u0634\u0648\u0631:"}</span>{" "}
+                  {state.data.country || FALLBACK_TEXT}
                 </li>
               </ul>
 
               <div className="rounded-2xl border border-slate-200 bg-white/90 p-3">
                 {!mapEmbedUrl ? (
-                  <p className="text-sm text-slate-600">مختصات برای نمایش نقشه در دسترس نیست.</p>
+                  <p className="text-sm text-slate-600">
+                    {
+                      "\u0645\u062e\u062a\u0635\u0627\u062a \u0628\u0631\u0627\u06cc \u0646\u0645\u0627\u06cc\u0634 \u0646\u0642\u0634\u0647 \u062f\u0631 \u062f\u0633\u062a\u0631\u0633 \u0646\u06cc\u0633\u062a."
+                    }
+                  </p>
                 ) : (
                   <iframe
                     src={mapEmbedUrl}
                     loading="lazy"
                     referrerPolicy="no-referrer-when-downgrade"
-                    title="نقشه موقعیت تقریبی IP"
+                    title={"\u0646\u0642\u0634\u0647 \u0645\u0648\u0642\u0639\u06cc\u062a \u062a\u0642\u0631\u06cc\u0628\u06cc IP"}
                     className="h-64 w-full overflow-hidden rounded-xl border border-slate-200"
-                    aria-label="نقشه موقعیت تقریبی IP"
+                    aria-label={
+                      "\u0646\u0642\u0634\u0647 \u0645\u0648\u0642\u0639\u06cc\u062a \u062a\u0642\u0631\u06cc\u0628\u06cc IP"
+                    }
                   />
                 )}
               </div>
@@ -309,17 +452,17 @@ export default function Home() {
             onClick={() => void refreshIpData()}
             className="mt-8 inline-flex min-h-11 items-center justify-center rounded-2xl bg-primary px-6 py-3 text-base font-semibold text-white shadow-lg shadow-primary/20 transition-transform duration-200 hover:scale-[1.02] hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-slate-100"
           >
-            به‌روزرسانی
+            {"\u0628\u0647\u200c\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc"}
           </button>
         </section>
       </main>
 
       <footer className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 py-3 text-slate-800 backdrop-blur-sm">
         <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-center gap-2 px-4 text-center text-xs sm:justify-between sm:gap-4 sm:px-6 sm:text-sm lg:px-8">
-          <p>© ۱۴۰۴ - تمام حقوق محفوظ است</p>
-          <div className="flex items-center gap-3">
-            
-          </div>
+          <p>
+            {"\u00A9 \u06F1\u06F4\u06F0\u06F4 - \u062A\u0645\u0627\u0645 \u062D\u0642\u0648\u0642 \u0645\u062D\u0641\u0648\u0638 \u0627\u0633\u062A"}
+          </p>
+          <div className="flex items-center gap-3"></div>
           <div className="flex items-center gap-3">
             <a
               aria-label="GitHub"
@@ -328,10 +471,10 @@ export default function Home() {
             >
               <Github className="h-4 w-4" />
             </a>
-            
           </div>
         </div>
       </footer>
     </div>
   );
 }
+
