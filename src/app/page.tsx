@@ -19,10 +19,6 @@ type FetchState = {
   data: IpDetails | null;
 };
 
-type IpifyResponse = {
-  ip?: string;
-};
-
 type IpWhoIsResponse = {
   success?: boolean;
   message?: string;
@@ -169,14 +165,13 @@ export default function Home() {
           data: {
             ip,
             ipType: fallback.version === "IPv6" ? "IPv6" : detectIpType(ip),
-          isp,
             city: fallback.city?.trim() || FALLBACK_TEXT,
             country: fallback.country_name?.trim() || FALLBACK_TEXT,
             lat: parseCoordinate(fallback.latitude),
             lon: parseCoordinate(fallback.longitude),
             isp: fallback.org?.trim() || FALLBACK_TEXT,
           },
-        },
+        });
       } catch {
         setState({
           loading: false,
