@@ -164,8 +164,11 @@ export function isGeoWeak(data: IntelData): boolean {
 
 export function shouldStopEarly(data: IntelData): boolean {
   const hasBothIps = Boolean(data.ipv4 && data.ipv6);
-  const hasGeo = isMeaningfulText(data.isp) || isMeaningfulText(data.country);
-  return hasBothIps && hasGeo;
+  const hasIsp = isMeaningfulText(data.isp);
+  const hasCity = isMeaningfulText(data.city);
+  const hasCountry = isMeaningfulText(data.country);
+  const hasCoords = data.lat !== null && data.lon !== null;
+  return hasBothIps && hasIsp && hasCountry && (hasCity || hasCoords);
 }
 
 export function redactIpForDiagnostics(ip?: string | null): string {

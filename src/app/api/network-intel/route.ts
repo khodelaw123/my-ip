@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
   EMPTY_INTEL,
   detectIpFamily,
@@ -18,6 +18,12 @@ type Provider = {
   format: ProviderFormat;
 };
 
+type TargetedProviderFactory = {
+  id: string;
+  format: ProviderFormat;
+  buildUrl: (encodedIp: string) => string;
+};
+
 type DiagnosticFailure = {
   source: string;
   reason: string;
@@ -33,10 +39,10 @@ type NetworkIntelResponse = {
 };
 
 const PROVIDER_TIMEOUT_MS = 3500;
-const OVERALL_TIMEOUT_MS = 7000;
-const CONCURRENCY_LIMIT = 4;
+const OVERALL_TIMEOUT_MS = 10000;
+const CONCURRENCY_LIMIT = 6;
 
-const PROVIDERS: Provider[] = [
+const BASE_IP_PROVIDERS: Provider[] = [
   { id: "ipify-v4", url: "https://api4.ipify.org?format=json", format: "json" },
   { id: "ipify-v6", url: "https://api6.ipify.org?format=json", format: "json" },
   { id: "ipify-v64", url: "https://api64.ipify.org?format=json", format: "json" },
@@ -46,11 +52,72 @@ const PROVIDERS: Provider[] = [
   { id: "icanhazip-v4", url: "https://ipv4.icanhazip.com", format: "text" },
   { id: "icanhazip-v6", url: "https://ipv6.icanhazip.com", format: "text" },
   { id: "ifconfig-ip", url: "https://ifconfig.me/ip", format: "text" },
+  { id: "identme-ip", url: "https://ident.me", format: "text" },
+  { id: "checkip-amazon-ip", url: "https://checkip.amazonaws.com", format: "text" },
+  { id: "seeip-ip", url: "https://ip.seeip.org", format: "text" },
+  { id: "ifconfigco-ip", url: "https://ifconfig.co/ip", format: "text" },
+  { id: "myexternalip-ip", url: "https://myexternalip.com/raw", format: "text" },
+];
+
+const UNTARGETED_GEO_PROVIDERS: Provider[] = [
   { id: "ipwhois-geo", url: "https://ipwho.is/", format: "json" },
   { id: "ipapi-geo", url: "https://ipapi.co/json/", format: "json" },
   { id: "ipinfo-geo", url: "https://ipinfo.io/json", format: "json" },
   { id: "freeipapi-geo", url: "https://freeipapi.com/api/json", format: "json" },
   { id: "ipsb-geo", url: "https://api.ip.sb/geoip", format: "json" },
+  { id: "ipwhoisapp-geo", url: "https://ipwhois.app/json/", format: "json" },
+  { id: "geolocationdb-geo", url: "https://geolocation-db.com/json/", format: "json" },
+  { id: "ifconfigco-geo", url: "https://ifconfig.co/json", format: "json" },
+  { id: "myip-geo", url: "https://api.myip.com", format: "json" },
+  {
+    id: "ipapihttp-geo",
+    url: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,lat,lon,isp,org,query",
+    format: "json",
+  },
+];
+
+const TARGETED_GEO_PROVIDER_FACTORIES: TargetedProviderFactory[] = [
+  {
+    id: "ipwhois-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://ipwho.is/${encodedIp}`,
+  },
+  {
+    id: "ipapi-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://ipapi.co/${encodedIp}/json/`,
+  },
+  {
+    id: "ipinfo-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://ipinfo.io/${encodedIp}/json`,
+  },
+  {
+    id: "freeipapi-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://freeipapi.com/api/json/${encodedIp}`,
+  },
+  {
+    id: "ipsb-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://api.ip.sb/geoip/${encodedIp}`,
+  },
+  {
+    id: "ipwhoisapp-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://ipwhois.app/json/${encodedIp}`,
+  },
+  {
+    id: "geolocationdb-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) => `https://geolocation-db.com/json/${encodedIp}&position=true`,
+  },
+  {
+    id: "ipapihttp-geo-targeted",
+    format: "json",
+    buildUrl: (encodedIp) =>
+      `http://ip-api.com/json/${encodedIp}?fields=status,message,country,countryCode,city,regionName,lat,lon,isp,org,query`,
+  },
 ];
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -83,19 +150,95 @@ function normalizeIpCandidate(value: string | null): Partial<IntelData> {
   return {};
 }
 
+function cleanIpCandidate(value: string): string | null {
+  let candidate = value.trim();
+  if (!candidate) return null;
+
+  candidate = candidate.replace(/^for=/i, "").trim();
+  candidate = candidate.replace(/^"(.+)"$/, "$1");
+
+  const semicolonIndex = candidate.indexOf(";");
+  if (semicolonIndex >= 0) {
+    candidate = candidate.slice(0, semicolonIndex).trim();
+  }
+
+  if (candidate.startsWith("[")) {
+    const endBracket = candidate.indexOf("]");
+    if (endBracket > 0) {
+      candidate = candidate.slice(1, endBracket);
+    }
+  }
+
+  if (candidate.includes(".") && candidate.includes(":")) {
+    candidate = candidate.split(":")[0];
+  }
+
+  candidate = candidate.split("%")[0];
+  return detectIpFamily(candidate) ? candidate : null;
+}
+
+function parseIpFromHeaderValue(raw: string): string | null {
+  const parts = raw.split(",");
+  for (const part of parts) {
+    const forwardedMatch = part.match(/for=(?:"?\[?([0-9a-fA-F:.%]+)\]?"?)/i);
+    if (forwardedMatch?.[1]) {
+      const fromForwarded = cleanIpCandidate(forwardedMatch[1]);
+      if (fromForwarded) return fromForwarded;
+    }
+
+    const direct = cleanIpCandidate(part);
+    if (direct) return direct;
+  }
+  return null;
+}
+
+function getClientIpHint(request: NextRequest): { ip: string | null; source: string | null } {
+  const headerOrder = [
+    "x-nf-client-connection-ip",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-real-ip",
+    "x-forwarded-for",
+    "x-vercel-forwarded-for",
+    "forwarded",
+  ];
+
+  for (const headerName of headerOrder) {
+    const rawValue = request.headers.get(headerName);
+    if (!rawValue) continue;
+    const ip = parseIpFromHeaderValue(rawValue);
+    if (ip) return { ip, source: headerName };
+  }
+
+  return { ip: null, source: null };
+}
+
+function buildProviders(clientIp: string | null): Provider[] {
+  const providers: Provider[] = [...BASE_IP_PROVIDERS];
+
+  if (clientIp) {
+    const encodedIp = encodeURIComponent(clientIp);
+    providers.push(
+      ...TARGETED_GEO_PROVIDER_FACTORIES.map((provider) => ({
+        id: provider.id,
+        format: provider.format,
+        url: provider.buildUrl(encodedIp),
+      })),
+    );
+  }
+
+  providers.push(...UNTARGETED_GEO_PROVIDERS);
+  return providers;
+}
+
 function parseProviderData(providerId: string, body: unknown): Partial<IntelData> {
   const record = toRecord(body);
 
-  if (
-    providerId === "ipify-v4" ||
-    providerId === "ipify-v6" ||
-    providerId === "ipify-v64" ||
-    providerId === "ipify-generic"
-  ) {
+  if (providerId.startsWith("ipify-")) {
     return normalizeIpCandidate(pickString(record, ["ip"]));
   }
 
-  if (providerId === "ipwhois-geo") {
+  if (providerId.startsWith("ipwhois-geo")) {
     const connection = toRecord(record.connection);
     const ip = pickString(record, ["ip"]);
     const country = pickString(record, ["country", "country_name", "countryCode", "country_code"]);
@@ -109,33 +252,33 @@ function parseProviderData(providerId: string, body: unknown): Partial<IntelData
     };
   }
 
-  if (providerId === "ipapi-geo") {
+  if (providerId.startsWith("ipapi-geo")) {
     const ip = pickString(record, ["ip"]);
     const country = pickString(record, ["country_name", "country", "country_code"]);
     return {
       ...normalizeIpCandidate(ip),
       isp: pickString(record, ["org", "isp", "asn_org"]),
-      city: pickString(record, ["city"]),
+      city: pickString(record, ["city", "region", "region_name"]),
       country,
       lat: pickCoordinate(record, ["latitude", "lat"]),
       lon: pickCoordinate(record, ["longitude", "lon"]),
     };
   }
 
-  if (providerId === "ipinfo-geo") {
+  if (providerId.startsWith("ipinfo-geo")) {
     const ip = pickString(record, ["ip"]);
     const loc = parseLocPair(pickString(record, ["loc"]));
     return {
       ...normalizeIpCandidate(ip),
       isp: pickString(record, ["org"]),
-      city: pickString(record, ["city"]),
+      city: pickString(record, ["city", "region"]),
       country: pickString(record, ["country"]),
       lat: loc.lat,
       lon: loc.lon,
     };
   }
 
-  if (providerId === "freeipapi-geo") {
+  if (providerId.startsWith("freeipapi-geo")) {
     const ip = pickString(record, ["ipAddress", "ip"]);
     return {
       ...normalizeIpCandidate(ip),
@@ -147,15 +290,73 @@ function parseProviderData(providerId: string, body: unknown): Partial<IntelData
     };
   }
 
-  if (providerId === "ipsb-geo") {
+  if (providerId.startsWith("ipsb-geo")) {
     const ip = pickString(record, ["ip"]);
     return {
       ...normalizeIpCandidate(ip),
       isp: pickString(record, ["isp", "organization", "asn_organization"]),
-      city: pickString(record, ["city"]),
+      city: pickString(record, ["city", "region"]),
       country: pickString(record, ["country", "country_name", "country_code"]),
       lat: pickCoordinate(record, ["latitude", "lat"]),
       lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId.startsWith("ipwhoisapp-geo")) {
+    const ip = pickString(record, ["ip"]);
+    return {
+      ...normalizeIpCandidate(ip),
+      isp: pickString(record, ["isp", "org", "organization"]),
+      city: pickString(record, ["city", "region"]),
+      country: pickString(record, ["country", "country_code"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId.startsWith("geolocationdb-geo")) {
+    const ip = pickString(record, ["IPv4", "ip"]);
+    return {
+      ...normalizeIpCandidate(ip),
+      city: pickString(record, ["city", "region", "state"]),
+      country: pickString(record, ["country_name", "country_code", "country"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId.startsWith("ifconfigco-geo")) {
+    const ip = pickString(record, ["ip"]);
+    return {
+      ...normalizeIpCandidate(ip),
+      isp: pickString(record, ["asn_org", "org"]),
+      city: pickString(record, ["city", "region_name", "region"]),
+      country: pickString(record, ["country", "country_iso"]),
+      lat: pickCoordinate(record, ["latitude", "lat"]),
+      lon: pickCoordinate(record, ["longitude", "lon"]),
+    };
+  }
+
+  if (providerId.startsWith("myip-geo")) {
+    const ip = pickString(record, ["ip"]);
+    return {
+      ...normalizeIpCandidate(ip),
+      country: pickString(record, ["country", "cc"]),
+    };
+  }
+
+  if (providerId.startsWith("ipapihttp-geo")) {
+    const status = pickString(record, ["status"]);
+    if (status && status.toLowerCase() === "fail") return {};
+
+    const ip = pickString(record, ["query", "ip"]);
+    return {
+      ...normalizeIpCandidate(ip),
+      isp: pickString(record, ["isp", "org"]),
+      city: pickString(record, ["city", "regionName"]),
+      country: pickString(record, ["country", "countryCode"]),
+      lat: pickCoordinate(record, ["lat", "latitude"]),
+      lon: pickCoordinate(record, ["lon", "longitude"]),
     };
   }
 
@@ -165,13 +366,7 @@ function parseProviderData(providerId: string, body: unknown): Partial<IntelData
 function parseProviderText(providerId: string, text: string): Partial<IntelData> {
   const value = text.trim();
   if (!value) return {};
-  if (
-    providerId === "ipsb-ip" ||
-    providerId === "ipsb64-ip" ||
-    providerId === "icanhazip-v4" ||
-    providerId === "icanhazip-v6" ||
-    providerId === "ifconfig-ip"
-  ) {
+  if (providerId.endsWith("-ip")) {
     return normalizeIpCandidate(value);
   }
   return {};
@@ -209,17 +404,22 @@ async function fetchProvider(
   }
 }
 
-async function runAggregation(): Promise<{
+async function runAggregation(options: {
+  providers: Provider[];
+  seededData?: Partial<IntelData>;
+  seededSources?: string[];
+}): Promise<{
   data: IntelData;
   attempted: string[];
   failures: DiagnosticFailure[];
   sourcesUsed: string[];
 }> {
+  const { providers, seededData, seededSources } = options;
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
   const attempted: string[] = [];
   const failures: DiagnosticFailure[] = [];
-  const sourcesUsed = new Set<string>();
-  let merged = { ...EMPTY_INTEL };
+  const sourcesUsed = new Set<string>(seededSources ?? []);
+  let merged = mergeIntel({ ...EMPTY_INTEL }, seededData ?? {});
   let index = 0;
   let active = 0;
   let done = false;
@@ -239,7 +439,7 @@ async function runAggregation(): Promise<{
 
     const launch = () => {
       if (done) return;
-      if ((stop || index >= PROVIDERS.length || Date.now() >= deadlineMs) && active === 0) {
+      if ((stop || index >= providers.length || Date.now() >= deadlineMs) && active === 0) {
         finish();
         return;
       }
@@ -248,10 +448,10 @@ async function runAggregation(): Promise<{
         !done &&
         !stop &&
         active < CONCURRENCY_LIMIT &&
-        index < PROVIDERS.length &&
+        index < providers.length &&
         Date.now() < deadlineMs
       ) {
-        const provider = PROVIDERS[index];
+        const provider = providers[index];
         index += 1;
         attempted.push(provider.id);
         active += 1;
@@ -288,7 +488,7 @@ async function runAggregation(): Promise<{
           });
       }
 
-      if ((stop || index >= PROVIDERS.length || Date.now() >= deadlineMs) && active === 0) {
+      if ((stop || index >= providers.length || Date.now() >= deadlineMs) && active === 0) {
         finish();
       }
     };
@@ -309,8 +509,17 @@ async function runAggregation(): Promise<{
   });
 }
 
-export async function GET(): Promise<NextResponse<NetworkIntelResponse>> {
-  const { data, attempted, failures, sourcesUsed } = await runAggregation();
+export async function GET(request: NextRequest): Promise<NextResponse<NetworkIntelResponse>> {
+  const { ip: hintedIp, source: hintSource } = getClientIpHint(request);
+  const providers = buildProviders(hintedIp);
+  const seededData = hintedIp ? normalizeIpCandidate(hintedIp) : {};
+  const seededSources = hintedIp ? [`request-header:${hintSource ?? "ip-hint"}`] : [];
+
+  const { data, attempted, failures, sourcesUsed } = await runAggregation({
+    providers,
+    seededData,
+    seededSources,
+  });
 
   const payload: NetworkIntelResponse = {
     success: hasAtLeastOneIp(data),
