@@ -12,8 +12,13 @@ A Next.js app that detects and displays your public IPv4/IPv6 address, ISP, city
 ## Features
 
 - IPv4 and IPv6 detection from multiple providers
+<<<<<<< HEAD
 - Server-side aggregation at `GET /api/network-intel` (client only calls internal API)
 - Approximate location map using OpenStreetMap embed URL
+=======
+- Client-side aggregation with server fallback at `GET /api/network-intel`
+- Approximate location map using Google Maps embed URL (no API key required)
+>>>>>>> b94caad247085f28ad7e8ee381e8bb06d9156b14
 - Provider failover with timeout and early-stop logic
 
 ## Local Development
