@@ -3,14 +3,7 @@
 import { Github, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
-  EMPTY_INTEL,
-  detectIpFamily,
   hasAtLeastOneIp,
-  isGeoWeak,
-  isMeaningfulText,
-  mergeIntel,
-  parseCoordinate,
-  parseLocPair,
   type IntelData,
 } from "@/lib/network-intel";
 
@@ -31,154 +24,13 @@ type NetworkIntelResponse = {
   };
 };
 
-type ProviderFormat = "json" | "text";
-
-type Provider = {
-  id: string;
-  url: string;
-  format: ProviderFormat;
-};
-
-const REQUEST_TIMEOUT_MS = 3500;
 const SERVER_TIMEOUT_MS = 7000;
 const FALLBACK_TEXT = "\u0646\u0627\u0645\u0634\u062e\u0635";
 const TITLE_TEXT = "\u0622\u062f\u0631\u0633 IP \u0634\u0645\u0627:";
 
-const BROWSER_PROVIDERS: Provider[] = [
-  { id: "ipify-v4", url: "https://api4.ipify.org?format=json", format: "json" },
-  { id: "ipify-v6", url: "https://api6.ipify.org?format=json", format: "json" },
-  { id: "ipify-v64", url: "https://api64.ipify.org?format=json", format: "json" },
-  { id: "ipify-generic", url: "https://api.ipify.org?format=json", format: "json" },
-  { id: "ipsb-ip", url: "https://api.ip.sb/ip", format: "text" },
-  { id: "ipsb64-ip", url: "https://api64.ip.sb/ip", format: "text" },
-  { id: "icanhazip-v4", url: "https://ipv4.icanhazip.com", format: "text" },
-  { id: "icanhazip-v6", url: "https://ipv6.icanhazip.com", format: "text" },
-  { id: "ipwhois-geo", url: "https://ipwho.is/", format: "json" },
-  { id: "ipapi-geo", url: "https://ipapi.co/json/", format: "json" },
-  { id: "ipinfo-geo", url: "https://ipinfo.io/json", format: "json" },
-  { id: "freeipapi-geo", url: "https://freeipapi.com/api/json", format: "json" },
-  { id: "ipsb-geo", url: "https://api.ip.sb/geoip", format: "json" },
-];
-
-function toRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object") return {};
-  return value as Record<string, unknown>;
-}
-
-function pickString(record: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function pickCoordinate(record: Record<string, unknown>, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = record[key];
-    const coordinate = parseCoordinate(value as number | string | null);
-    if (coordinate !== null) return coordinate;
-  }
-  return null;
-}
-
-function normalizeIpCandidate(value: string | null): Partial<IntelData> {
-  if (!value) return {};
-  const family = detectIpFamily(value);
-  if (family === "IPv4") return { ipv4: value };
-  if (family === "IPv6") return { ipv6: value };
-  return {};
-}
-
-function parseProviderJson(providerId: string, body: unknown): Partial<IntelData> {
-  const record = toRecord(body);
-
-  if (
-    providerId === "ipify-v4" ||
-    providerId === "ipify-v6" ||
-    providerId === "ipify-v64" ||
-    providerId === "ipify-generic"
-  ) {
-    return normalizeIpCandidate(pickString(record, ["ip"]));
-  }
-
-  if (providerId === "ipwhois-geo") {
-    const connection = toRecord(record.connection);
-    return {
-      ...normalizeIpCandidate(pickString(record, ["ip"])),
-      isp: pickString(connection, ["isp", "org", "organization"]),
-      city: pickString(record, ["city"]),
-      country: pickString(record, ["country", "country_name", "countryCode", "country_code"]),
-      lat: pickCoordinate(record, ["latitude", "lat"]),
-      lon: pickCoordinate(record, ["longitude", "lon"]),
-    };
-  }
-
-  if (providerId === "ipapi-geo") {
-    return {
-      ...normalizeIpCandidate(pickString(record, ["ip"])),
-      isp: pickString(record, ["org", "isp", "asn_org"]),
-      city: pickString(record, ["city"]),
-      country: pickString(record, ["country_name", "country", "country_code"]),
-      lat: pickCoordinate(record, ["latitude", "lat"]),
-      lon: pickCoordinate(record, ["longitude", "lon"]),
-    };
-  }
-
-  if (providerId === "ipinfo-geo") {
-    const loc = parseLocPair(pickString(record, ["loc"]));
-    return {
-      ...normalizeIpCandidate(pickString(record, ["ip"])),
-      isp: pickString(record, ["org"]),
-      city: pickString(record, ["city"]),
-      country: pickString(record, ["country"]),
-      lat: loc.lat,
-      lon: loc.lon,
-    };
-  }
-
-  if (providerId === "freeipapi-geo") {
-    return {
-      ...normalizeIpCandidate(pickString(record, ["ipAddress", "ip"])),
-      isp: pickString(record, ["isp", "organizationName", "organization"]),
-      city: pickString(record, ["cityName", "city"]),
-      country: pickString(record, ["countryName", "countryCode", "country"]),
-      lat: pickCoordinate(record, ["latitude", "lat"]),
-      lon: pickCoordinate(record, ["longitude", "lon"]),
-    };
-  }
-
-  if (providerId === "ipsb-geo") {
-    return {
-      ...normalizeIpCandidate(pickString(record, ["ip"])),
-      isp: pickString(record, ["isp", "organization", "asn_organization"]),
-      city: pickString(record, ["city"]),
-      country: pickString(record, ["country", "country_name", "country_code"]),
-      lat: pickCoordinate(record, ["latitude", "lat"]),
-      lon: pickCoordinate(record, ["longitude", "lon"]),
-    };
-  }
-
-  return {};
-}
-
-function parseProviderText(providerId: string, text: string): Partial<IntelData> {
-  const value = text.trim();
-  if (!value) return {};
-  if (
-    providerId === "ipsb-ip" ||
-    providerId === "ipsb64-ip" ||
-    providerId === "icanhazip-v4" ||
-    providerId === "icanhazip-v6"
-  ) {
-    return normalizeIpCandidate(value);
-  }
-  return {};
-}
-
 async function fetchWithTimeout(
   url: string,
-  timeoutMs = REQUEST_TIMEOUT_MS,
+  timeoutMs = SERVER_TIMEOUT_MS,
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -217,53 +69,6 @@ function typeText(
   return () => window.clearInterval(interval);
 }
 
-async function runBrowserAggregation(): Promise<{ data: IntelData }> {
-  const settled = await Promise.allSettled(
-    BROWSER_PROVIDERS.map(async (provider) => {
-      const res = await fetchWithTimeout(provider.url, REQUEST_TIMEOUT_MS);
-      if (!res.ok) {
-        throw new Error(`http-${res.status}`);
-      }
-
-      if (provider.format === "json") {
-        const body = await res.json();
-        return { id: provider.id, partial: parseProviderJson(provider.id, body) };
-      }
-
-      const text = await res.text();
-      return { id: provider.id, partial: parseProviderText(provider.id, text) };
-    }),
-  );
-
-  let merged = { ...EMPTY_INTEL };
-  for (let i = 0; i < settled.length; i += 1) {
-    const item = settled[i];
-    if (item.status === "fulfilled") {
-      merged = mergeIntel(merged, item.value.partial);
-    }
-  }
-
-  return { data: merged };
-}
-
-function mergeMissingFromServer(browserData: IntelData, serverData: IntelData): IntelData {
-  const merged = { ...browserData };
-
-  if (!merged.ipv4 && serverData.ipv4) merged.ipv4 = serverData.ipv4;
-  if (!merged.ipv6 && serverData.ipv6) merged.ipv6 = serverData.ipv6;
-
-  if (!isMeaningfulText(merged.city) && serverData.city) merged.city = serverData.city;
-  if (!isMeaningfulText(merged.country) && serverData.country) merged.country = serverData.country;
-  if (!isMeaningfulText(merged.isp) && serverData.isp) merged.isp = serverData.isp;
-
-  if ((merged.lat === null || merged.lon === null) && serverData.lat !== null && serverData.lon !== null) {
-    merged.lat = serverData.lat;
-    merged.lon = serverData.lon;
-  }
-
-  return merged;
-}
-
 export default function Home() {
   const [state, setState] = useState<FetchState>({
     loading: true,
@@ -278,31 +83,20 @@ export default function Home() {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const browser = await runBrowserAggregation();
-      let finalData = browser.data;
-
-      if (!hasAtLeastOneIp(finalData) || isGeoWeak(finalData)) {
-        try {
-          const serverRes = await fetchWithTimeout("/api/network-intel", SERVER_TIMEOUT_MS);
-          if (serverRes.ok) {
-            const serverJson = (await serverRes.json()) as NetworkIntelResponse;
-            if (serverJson.success && serverJson.data) {
-              finalData = mergeMissingFromServer(finalData, serverJson.data);
-            }
-          }
-        } catch {
-          // Keep browser aggregation results when server fallback fails.
-        }
+      const serverRes = await fetchWithTimeout("/api/network-intel", SERVER_TIMEOUT_MS);
+      if (!serverRes.ok) {
+        throw new Error(`http-${serverRes.status}`);
       }
 
-      if (!hasAtLeastOneIp(finalData)) {
+      const serverJson = (await serverRes.json()) as NetworkIntelResponse;
+      if (!serverJson.success || !serverJson.data || !hasAtLeastOneIp(serverJson.data)) {
         throw new Error("missing all ip families");
       }
 
       setState({
         loading: false,
         error: null,
-        data: finalData,
+        data: serverJson.data,
       });
     } catch {
       setState({
@@ -340,7 +134,7 @@ export default function Home() {
   const lon = state.data?.lon;
   const hasCoordinates = typeof lat === "number" && typeof lon === "number";
   const mapEmbedUrl = hasCoordinates
-    ? `https://www.google.com/maps?q=${lat},${lon}&z=6&output=embed`
+    ? `https://www.openstreetmap.org/export/embed.html?layer=mapnik&marker=${lat},${lon}`
     : null;
 
   return (
@@ -477,4 +271,3 @@ export default function Home() {
     </div>
   );
 }
-
