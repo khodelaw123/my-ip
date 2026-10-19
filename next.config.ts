@@ -1,16 +1,7 @@
 import type { NextConfig } from "next";
 
-const PHP_BACKEND_URL = process.env.PHP_BACKEND_URL || "http://127.0.0.1:8000";
-
 const nextConfig: NextConfig = {
-  async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${PHP_BACKEND_URL}/api/:path*`,
-      },
-    ];
-  },
+  // Powered by PHP backend with seamless zero-downtime serverless fallback
 };
 
 export default nextConfig;
