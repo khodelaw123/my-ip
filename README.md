@@ -21,7 +21,7 @@ Detects public IPv4/IPv6, ISP, ASN, approximate location coordinates, and connec
 - **🛡️ 100% Free & Keyless**: Combines 15+ verified public endpoints with automatic failover. No API keys needed.
 - **🌍 Resilient & Accessible**: Fully tested and optimized for all global networks, including Iranian ASNs (Irancell, MCI, Shatel, Asiatech).
 - **🎯 Smart Proxy Isolation**: Detects client IP from CDN/proxy headers (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`) while preventing server-side datacenter leakage.
-- **🧩 Clean Decoupled Stack**: Modern Next.js 16 frontend + PSR-4 compliant PHP micro-backend.
+- **🧩 Clean Decoupled Stack**: Modern Next.js 16 frontend + PSR-4 compliant PHP micro-backend with zero-downtime serverless fallback.
 
 ---
 
@@ -37,7 +37,7 @@ my-ip/
 │   ├── src/                      # Models, Services, & Support classes
 │   └── server.php                # CLI router for local development
 ├── netlify.toml                  # Production deployment & security headers
-└── next.config.ts                # Next.js proxy rewrites to PHP backend
+└── next.config.ts                # Next.js configuration
 ```
 
 ---
@@ -54,23 +54,25 @@ my-ip/
 git clone git@github.com:khodelaw123/my-ip.git
 cd my-ip
 
-# Install frontend dependencies
+# Install dependencies
 npm install
 ```
 
 ### 3. Run Locally
 
-Open two terminal sessions:
+Start both the PHP backend and Next.js frontend with a single command:
 
 ```bash
-# Terminal 1: Start the PHP backend (runs on http://127.0.0.1:8000)
-npm run dev:backend
-
-# Terminal 2: Start the Next.js frontend (runs on http://localhost:3000)
 npm run dev
 ```
 
-Visit [`http://localhost:3000`](http://localhost:3000) in your browser. Next.js automatically rewrites `/api/*` to the PHP backend.
+Visit [`http://localhost:3000`](http://localhost:3000) in your browser. The app automatically runs both services:
+- **Frontend**: `http://localhost:3000`
+- **Backend**: `http://127.0.0.1:8000`
+
+*(Optional) To run them in separate terminals:*
+- `npm run dev:backend` — Starts the PHP server on port 8000
+- `npm run dev:frontend` — Starts Next.js on port 3000
 
 ---
 
