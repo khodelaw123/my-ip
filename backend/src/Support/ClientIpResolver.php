@@ -19,13 +19,25 @@ class ClientIpResolver
         'REMOTE_ADDR'                   => 'remote-addr',
     ];
 
+    public static function isPublicIp(?string $ip): bool
+    {
+        if (!$ip) {
+            return false;
+        }
+        return filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        ) !== false;
+    }
+
     public static function resolve(): array
     {
         foreach (self::CANDIDATE_HEADERS as $serverKey => $headerName) {
             if (!empty($_SERVER[$serverKey])) {
                 $raw = (string)$_SERVER[$serverKey];
                 $ip = self::parseIpFromHeaderValue($raw);
-                if ($ip) {
+                if ($ip && self::isPublicIp($ip)) {
                     return ['ip' => $ip, 'source' => $headerName];
                 }
             }
@@ -77,13 +89,13 @@ class ClientIpResolver
         foreach ($parts as $part) {
             if (preg_match('/for=(?:"?\[?([0-9a-fA-F:.%]+)\]?"?)/i', $part, $matches)) {
                 $fromForwarded = self::cleanCandidate($matches[1]);
-                if ($fromForwarded) {
+                if ($fromForwarded && self::isPublicIp($fromForwarded)) {
                     return $fromForwarded;
                 }
             }
 
             $direct = self::cleanCandidate($part);
-            if ($direct) {
+            if ($direct && self::isPublicIp($direct)) {
                 return $direct;
             }
         }
