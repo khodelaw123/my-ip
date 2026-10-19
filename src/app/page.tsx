@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { Github, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -83,7 +83,10 @@ export default function Home() {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const serverRes = await fetchWithTimeout("/api/network-intel", SERVER_TIMEOUT_MS);
+      const apiEndpoint = process.env.NEXT_PUBLIC_API_URL
+        ? `${process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, "")}/api/network-intel`
+        : "/api/network-intel";
+      const serverRes = await fetchWithTimeout(apiEndpoint, SERVER_TIMEOUT_MS);
       if (!serverRes.ok) {
         throw new Error(`http-${serverRes.status}`);
       }
